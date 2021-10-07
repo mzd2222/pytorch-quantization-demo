@@ -21,10 +21,11 @@ def calcScaleZeroPoint(min_val, max_val, num_bits=8):
     elif zero_point > qmax:
         # zero_point = qmax
         zero_point = torch.tensor([qmax], dtype=torch.float32).to(max_val.device)
-    
+
     zero_point.round_()
 
     return scale, zero_point
+
 
 def quantize_tensor(x, scale, zero_point, num_bits=8, signed=False):
     if signed:
@@ -33,12 +34,13 @@ def quantize_tensor(x, scale, zero_point, num_bits=8, signed=False):
     else:
         qmin = 0.
         qmax = 2. ** num_bits - 1.
- 
+
     q_x = zero_point + x / scale
     q_x.clamp_(qmin, qmax).round_()
-    
+
     return q_x
- 
+
+
 def dequantize_tensor(q_x, scale, zero_point):
     return scale * (q_x - zero_point)
 
@@ -54,7 +56,7 @@ def search(M):
         error = approx_result - result
 
         print("n=%d, Mo=%f, approx=%d, result=%d, error=%f" % \
-            (n, Mo, approx_result, result, error))
+              (n, Mo, approx_result, result, error))
 
         if math.fabs(error) < 1e-9 or n >= 22:
             return Mo, n
@@ -79,20 +81,21 @@ class QParam(nn.Module):
         if self.max.nelement() == 0 or self.max.data < tensor.max().data:
             self.max.data = tensor.max().data
         self.max.clamp_(min=0)
-        
+
         if self.min.nelement() == 0 or self.min.data > tensor.min().data:
             self.min.data = tensor.min().data
         self.min.clamp_(max=0)
-        
+
         self.scale, self.zero_point = calcScaleZeroPoint(self.min, self.max, self.num_bits)
-    
+
     def quantize_tensor(self, tensor):
         return quantize_tensor(tensor, self.scale, self.zero_point, num_bits=self.num_bits)
 
     def dequantize_tensor(self, q_x):
         return dequantize_tensor(q_x, self.scale, self.zero_point)
 
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+                              error_msgs):
         key_names = ['scale', 'zero_point', 'min', 'max']
         for key in key_names:
             value = getattr(self, key)
@@ -105,7 +108,6 @@ class QParam(nn.Module):
         info += 'min: %.6f ' % self.min
         info += 'max: %.6f' % self.max
         return info
-
 
 
 class QModule(nn.Module):
@@ -133,7 +135,7 @@ class QConv2d(QModule):
         self.qw = QParam(num_bits=num_bits)
 
     def freeze(self, qi=None, qo=None):
-        
+
         if hasattr(self, 'qi') and qi is not None:
             raise ValueError('qi has been provided in init function.')
         if not hasattr(self, 'qi') and qi is None:
@@ -163,9 +165,9 @@ class QConv2d(QModule):
 
         self.qw.update(self.conv_module.weight.data)
 
-        x = F.conv2d(x, FakeQuantize.apply(self.conv_module.weight, self.qw), self.conv_module.bias, 
+        x = F.conv2d(x, FakeQuantize.apply(self.conv_module.weight, self.qw), self.conv_module.bias,
                      stride=self.conv_module.stride,
-                     padding=self.conv_module.padding, dilation=self.conv_module.dilation, 
+                     padding=self.conv_module.padding, dilation=self.conv_module.dilation,
                      groups=self.conv_module.groups)
 
         if hasattr(self, 'qo'):
@@ -178,9 +180,9 @@ class QConv2d(QModule):
         x = x - self.qi.zero_point
         x = self.conv_module(x)
         x = self.M * x
-        x.round_() 
-        x = x + self.qo.zero_point        
-        x.clamp_(0., 2.**self.num_bits-1.).round_()
+        x.round_()
+        x = x + self.qo.zero_point
+        x.clamp_(0., 2. ** self.num_bits - 1.).round_()
         return x
 
 
@@ -234,9 +236,9 @@ class QLinear(QModule):
         x = x - self.qi.zero_point
         x = self.fc_module(x)
         x = self.M * x
-        x.round_() 
+        x.round_()
         x = x + self.qo.zero_point
-        x.clamp_(0., 2.**self.num_bits-1.).round_()
+        x.clamp_(0., 2. ** self.num_bits - 1.).round_()
         return x
 
 
@@ -246,7 +248,7 @@ class QReLU(QModule):
         super(QReLU, self).__init__(qi=qi, num_bits=num_bits)
 
     def freeze(self, qi=None):
-        
+
         if hasattr(self, 'qi') and qi is not None:
             raise ValueError('qi has been provided in init function.')
         if not hasattr(self, 'qi') and qi is None:
@@ -263,11 +265,12 @@ class QReLU(QModule):
         x = F.relu(x)
 
         return x
-    
+
     def quantize_inference(self, x):
         x = x.clone()
         x[x < self.qi.zero_point] = self.qi.zero_point
         return x
+
 
 class QMaxPooling2d(QModule):
 
@@ -323,9 +326,8 @@ class QConvBNReLU(QModule):
                 bias = gamma_ * self.conv_module.bias - gamma_ * mean
             else:
                 bias = -gamma_ * mean
-            
-        return weight, bias
 
+        return weight, bias
 
     def forward(self, x):
 
@@ -334,13 +336,13 @@ class QConvBNReLU(QModule):
             x = FakeQuantize.apply(x, self.qi)
 
         if self.training:
-            y = F.conv2d(x, self.conv_module.weight, self.conv_module.bias, 
-                            stride=self.conv_module.stride,
-                            padding=self.conv_module.padding,
-                            dilation=self.conv_module.dilation,
-                            groups=self.conv_module.groups)
-            y = y.permute(1, 0, 2, 3) # NCHW -> CNHW
-            y = y.contiguous().view(self.conv_module.out_channels, -1) # CNHW -> C,NHW
+            y = F.conv2d(x, self.conv_module.weight, self.conv_module.bias,
+                         stride=self.conv_module.stride,
+                         padding=self.conv_module.padding,
+                         dilation=self.conv_module.dilation,
+                         groups=self.conv_module.groups)
+            y = y.permute(1, 0, 2, 3)  # NCHW -> CNHW
+            y = y.contiguous().view(self.conv_module.out_channels, -1)  # CNHW -> C,NHW
             # mean = y.mean(1)
             # var = y.var(1)
             mean = y.mean(1).detach()
@@ -361,10 +363,10 @@ class QConvBNReLU(QModule):
 
         self.qw.update(weight.data)
 
-        x = F.conv2d(x, FakeQuantize.apply(weight, self.qw), bias, 
-                stride=self.conv_module.stride,
-                padding=self.conv_module.padding, dilation=self.conv_module.dilation, 
-                groups=self.conv_module.groups)
+        x = F.conv2d(x, FakeQuantize.apply(weight, self.qw), bias,
+                     stride=self.conv_module.stride,
+                     padding=self.conv_module.padding, dilation=self.conv_module.dilation,
+                     groups=self.conv_module.groups)
 
         x = F.relu(x)
 
@@ -402,8 +404,7 @@ class QConvBNReLU(QModule):
         x = x - self.qi.zero_point
         x = self.conv_module(x)
         x = self.M * x
-        x.round_() 
-        x = x + self.qo.zero_point        
-        x.clamp_(0., 2.**self.num_bits-1.).round_()
+        x.round_()
+        x = x + self.qo.zero_point
+        x.clamp_(0., 2. ** self.num_bits - 1.).round_()
         return x
-        
